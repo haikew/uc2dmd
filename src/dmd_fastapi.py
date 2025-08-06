@@ -61,11 +61,11 @@ PROJ_ON_PIN = 5
 I2C_BUS_ID = 8
 DMD_H, DMD_W = 720, 1280
 FB_DEVICE = "/dev/fb0"
-PATTERN_DIR = os.getenv("PATTERN_DIR", "/home/pi/Patterns")
+PATTERN_DIR = os.getenv("PATTERN_DIR", os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_PATTERNS = [
-    "white_gray.png",
-    "black_gray.png",
-    "openMLA_logo_1280x720.png",
+    "SIM_grating_phase_1_period_6.png",
+    "SIM_grating_phase_2_period_6.png", 
+    "SIM_grating_phase_3_period_6.png",
 ]
 
 # ────────────────────────────
@@ -129,8 +129,8 @@ class DMDController:
     def _check_dmd_communication(self) -> bool:
         """Check if DMD is responding to communication."""
         try:
-            # Try a simple operation to check if DMD is responsive
-            # This is a placeholder - actual implementation would depend on DLPC1438 API
+            # Try to read the current mode to check if DMD is responsive
+            current_mode = self.i2c.read_byte_data(self.dmd.addr, 0x06)
             return True
         except Exception:
             return False
@@ -148,8 +148,27 @@ class DMDController:
             self.dmd.stop_exposure()
             time.sleep(0.5)
             
-            # Reinitialize
-            self._init_hardware()
+            # Toggle PROJ_ON pin to reset DMD
+            if hasattr(GPIO, "output"):
+                GPIO.output(PROJ_ON_PIN, GPIO.LOW)
+                time.sleep(1)
+                GPIO.output(PROJ_ON_PIN, GPIO.HIGH)
+                
+                # Wait for HOST_IRQ to go high
+                timeout = time.time() + DMD_COMMUNICATION_TIMEOUT
+                while not GPIO.input(HOST_IRQ_PIN) and time.time() < timeout:
+                    time.sleep(0.001)
+                
+                if time.time() >= timeout:
+                    print("Timeout waiting for HOST_IRQ")
+                    return False
+            
+            # Reinitialize DMD
+            self.dmd = DLPC1438(self.i2c, PROJ_ON_PIN, HOST_IRQ_PIN)
+            self.dmd.configure_external_print(LED_PWM=50)
+            self.dmd.switch_mode(Mode.EXTERNALPRINT)
+            self.dmd.expose_pattern(-1)
+            
             return self._check_dmd_communication()
         except Exception as e:
             print(f"DMD restart failed: {e}")
@@ -159,24 +178,76 @@ class DMDController:
 
     @staticmethod
     def _load_patterns(paths: List[str]) -> List[np.ndarray]:
+        """Load pattern images from file paths."""
         out: list[np.ndarray] = []
         for p in paths:
             try:
-                img = Image.open(p).resize((DMD_W, DMD_H))
-                out.append(np.array(img))
+                # Check if path is absolute, if not, make it relative to PATTERN_DIR
+                if not os.path.isabs(p):
+                    p = os.path.join(PATTERN_DIR, p)
+                
+                print(f"Loading pattern: {p}")
+                img = Image.open(p)
+                
+                # Convert to RGB if necessary
+                if img.mode != 'RGB':
+                    img = img.convert('RGB')
+                
+                # Resize to DMD dimensions
+                img = img.resize((DMD_W, DMD_H), Image.Resampling.LANCZOS)
+                
+                # Convert to numpy array and extract grayscale
+                img_array = np.array(img)
+                if len(img_array.shape) == 3:
+                    # Convert RGB to grayscale
+                    grayscale = np.mean(img_array, axis=2).astype(np.uint8)
+                else:
+                    grayscale = img_array.astype(np.uint8)
+                
+                out.append(grayscale)
+                print(f"Successfully loaded pattern {len(out)}: {os.path.basename(p)} ({grayscale.shape})")
+                
             except FileNotFoundError:
+                print(f"Pattern file not found: {p}, using black frame")
                 # fallback: solid black frame
                 out.append(np.zeros((DMD_H, DMD_W), dtype=np.uint8))
+            except Exception as e:
+                print(f"Error loading pattern {p}: {e}, using black frame")
+                out.append(np.zeros((DMD_H, DMD_W), dtype=np.uint8))
+                
+        if not out:
+            print("No patterns loaded, creating default black pattern")
+            out.append(np.zeros((DMD_H, DMD_W), dtype=np.uint8))
+            
         return out
 
     # ───────── pattern display ─────────
 
     def display_pattern(self, idx: int):
+        """Display a pattern by index with error handling."""
         with self._lock:
             if 0 <= idx < len(self.patterns):
-                self.fb[:, :, 2] = self.patterns[idx]  # red channel only
+                try:
+                    # Check pattern dimensions and adjust if necessary
+                    pattern = self.patterns[idx]
+                    if len(pattern.shape) == 3:  # RGB image
+                        # Convert to grayscale if needed
+                        if pattern.shape[2] == 3:
+                            pattern = np.mean(pattern, axis=2).astype(np.uint8)
+                        elif pattern.shape[2] == 4:
+                            pattern = pattern[:, :, 0]  # Take first channel
+                    
+                    # Ensure pattern is the right size
+                    if pattern.shape != (DMD_H, DMD_W):
+                        pattern = np.resize(pattern, (DMD_H, DMD_W))
+                    
+                    self.fb[:, :, 2] = pattern  # red channel only
+                    self.fb.flush()  # Ensure data is written to framebuffer
+                except Exception as e:
+                    print(f"Error displaying pattern {idx}: {e}")
+                    raise
             else:
-                raise IndexError("Pattern id out of range")
+                raise IndexError(f"Pattern id {idx} out of range (0-{len(self.patterns)-1})")
 
     # ───────── loop helpers ─────────
 
@@ -286,56 +357,215 @@ class DMDController:
 # ────────────────────────────
 # FastAPI
 # ────────────────────────────
+print("Initializing DMD Controller...")
 pattern_files = [os.path.join(PATTERN_DIR, f) for f in DEFAULT_PATTERNS]
-controller = DMDController(pattern_files)
-app = FastAPI(title="DMD FastAPI Controller")
+
+# Verify pattern files exist
+existing_patterns = []
+for f in pattern_files:
+    if os.path.exists(f):
+        existing_patterns.append(f)
+        print(f"Found pattern file: {f}")
+    else:
+        print(f"Warning: Pattern file not found: {f}")
+
+if not existing_patterns:
+    print("Warning: No pattern files found, will use default patterns")
+    existing_patterns = pattern_files  # Let the controller handle missing files
+
+try:
+    controller = DMDController(existing_patterns)
+    print("DMD Controller initialized successfully")
+except Exception as e:
+    print(f"Error initializing DMD Controller: {e}")
+    controller = None
+
+app = FastAPI(title="DMD FastAPI Controller", version="1.0.0")
+
+@app.on_event("startup")
+async def startup_event():
+    """Startup event handler."""
+    if controller is None:
+        print("Warning: DMD Controller not initialized properly")
+    else:
+        print("DMD FastAPI Controller started successfully")
 
 @app.on_event("shutdown")
 def _cleanup():
-    controller.shutdown()
+    """Shutdown event handler."""
+    if controller:
+        controller.shutdown()
+        print("DMD Controller shutdown complete")
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint."""
+    if controller is None:
+        return {"status": "unhealthy", "message": "DMD Controller not initialized"}
+    
+    try:
+        status = controller.get_status()
+        dmd_comm = controller._check_dmd_communication()
+        return {
+            "status": "healthy",
+            "dmd_communication": dmd_comm,
+            "controller_status": status,
+            "patterns_loaded": len(controller.patterns)
+        }
+    except Exception as e:
+        return {"status": "unhealthy", "message": str(e)}
 
 @app.get("/display/{pattern_id}")
 def display(pattern_id: int):
-    controller.display_pattern(pattern_id)
-    return {"status": "displayed", "pattern_id": pattern_id}
+    """Display a specific pattern by ID."""
+    if controller is None:
+        return {"status": "error", "message": "DMD Controller not initialized"}
+    
+    try:
+        controller.display_pattern(pattern_id)
+        return {"status": "displayed", "pattern_id": pattern_id}
+    except IndexError as e:
+        return {"status": "error", "message": str(e)}
+    except Exception as e:
+        return {"status": "error", "message": f"Failed to display pattern: {str(e)}"}
+
+@app.get("/patterns")
+def list_patterns():
+    """List all available patterns."""
+    if controller is None:
+        return {"status": "error", "message": "DMD Controller not initialized"}
+        
+    try:
+        patterns_info = []
+        for i, pattern in enumerate(controller.patterns):
+            patterns_info.append({
+                "id": i,
+                "shape": pattern.shape,
+                "dtype": str(pattern.dtype)
+            })
+        return {
+            "total_patterns": len(controller.patterns),
+            "patterns": patterns_info,
+            "pattern_files": [os.path.basename(f) for f in existing_patterns]
+        }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.post("/start")
 def start(cycles: int = -1):
     """Start continuous pattern display. cycles=-1 means infinite loop."""
-    success = controller.start_continuous(max_cycles=cycles)
-    if success:
-        return {"status": "started", "max_cycles": cycles}
-    else:
-        return {"status": "already_running"}
+    if controller is None:
+        return {"status": "error", "message": "DMD Controller not initialized"}
+        
+    try:
+        success = controller.start_continuous(max_cycles=cycles)
+        if success:
+            return {"status": "started", "max_cycles": cycles}
+        else:
+            return {"status": "already_running", "message": "Controller is already running"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.post("/stop")
 def stop():
-    success = controller.stop_continuous()
-    return {"status": "stopped" if success else "error"}
+    """Stop continuous pattern display."""
+    if controller is None:
+        return {"status": "error", "message": "DMD Controller not initialized"}
+        
+    try:
+        success = controller.stop_continuous()
+        return {"status": "stopped" if success else "error"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.post("/pause")
 def pause():
-    success = controller.pause_continuous()
-    return {"status": "paused" if success else "error"}
+    """Pause continuous pattern display."""
+    if controller is None:
+        return {"status": "error", "message": "DMD Controller not initialized"}
+        
+    try:
+        success = controller.pause_continuous()
+        return {"status": "paused" if success else "error"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.post("/resume")
 def resume():
-    success = controller.resume_continuous()
-    return {"status": "resumed" if success else "error"}
+    """Resume continuous pattern display."""
+    if controller is None:
+        return {"status": "error", "message": "DMD Controller not initialized"}
+        
+    try:
+        success = controller.resume_continuous()
+        return {"status": "resumed" if success else "error"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.post("/interrupt")
 def interrupt():
-    success = controller.interrupt_continuous()
-    return {"status": "interrupted" if success else "error"}
+    """Interrupt and stop current cycle immediately."""
+    if controller is None:
+        return {"status": "error", "message": "DMD Controller not initialized"}
+        
+    try:
+        success = controller.interrupt_continuous()
+        return {"status": "interrupted" if success else "error"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.get("/status")
 def get_status():
-    return controller.get_status()
+    """Get current status of the controller."""
+    if controller is None:
+        return {"status": "error", "message": "DMD Controller not initialized"}
+        
+    try:
+        status = controller.get_status()
+        # Add hardware communication check
+        status["dmd_communication"] = controller._check_dmd_communication()
+        return status
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 @app.post("/wait/{seconds}")
 def set_wait(seconds: float):
-    controller.set_wait(seconds)
-    return {"status": "ok", "wait": seconds}
+    """Set wait time between patterns."""
+    if controller is None:
+        return {"status": "error", "message": "DMD Controller not initialized"}
+        
+    try:
+        if seconds < 0.001:
+            return {"status": "error", "message": "Wait time must be at least 0.001 seconds"}
+        controller.set_wait(seconds)
+        return {"status": "ok", "wait": seconds}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+@app.post("/test_dmd")
+def test_dmd_communication():
+    """Test DMD communication and attempt restart if needed."""
+    if controller is None:
+        return {"status": "error", "message": "DMD Controller not initialized"}
+        
+    try:
+        communication_ok = controller._check_dmd_communication()
+        if not communication_ok:
+            restart_success = controller._restart_dmd()
+            return {
+                "communication_ok": False,
+                "restart_attempted": True,
+                "restart_success": restart_success,
+                "restart_attempts": controller._restart_attempts
+            }
+        else:
+            return {
+                "communication_ok": True,
+                "restart_attempted": False,
+                "restart_attempts": controller._restart_attempts
+            }
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
 
 # ────────────────────────────
 # Entrypoint
