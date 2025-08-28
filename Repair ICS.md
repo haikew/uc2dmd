@@ -25,7 +25,7 @@ sc.exe queryex sharedaccess
 
 - `ncpa.cpl` → Wi-Fi → **Properties → Sharing** → enable _Allow other network users…_ → select **USB Ethernet/RNDIS Gadget**.
     
-- Expected: RNDIS becomes **192.168.137.1/24**. ([微软学习](https://learn.microsoft.com/en-us/answers/questions/2699518/to-change-default-internet-connection-sharing-ip-a?utm_source=chatgpt.com "To Change Default Internet Connection Sharing IP Address ..."))
+- Expected: RNDIS becomes **192.168.137.1/24**. (https://learn.microsoft.com/en-us/answers/questions/2699518/to-change-default-internet-connection-sharing-ip-a?utm_source=chatgpt.com "To Change Default Internet Connection Sharing IP Address ...")
     
 
 Quick checks:
@@ -94,7 +94,7 @@ ping -c3 192.168.137.1
     
 2. Find the Pi device (often under **Other devices**, sometimes shown as _RNDIS_, _USB Ethernet/RNDIS Gadget_, or a COM device).
     
-3. **Update driver** → **Browse my computer** → **Let me pick from a list** → **Network adapters** → **Microsoft** → **Remote NDIS Compatible Device** → **Next**. ([微软学习](https://learn.microsoft.com/en-us/answers/questions/3225865/missing-remote-ndis-driver-after-win10-update-to-1?utm_source=chatgpt.com "Missing Remote NDIS DRIVER after win10 update to 1903"), [learn.adafruit.com](https://learn.adafruit.com/turning-your-raspberry-pi-zero-into-a-usb-gadget/ethernet-gadget?utm_source=chatgpt.com "Turning your Raspberry Pi Zero into a USB Gadget"))
+3. **Update driver** → **Browse my computer** → **Let me pick from a list** → **Network adapters** → **Microsoft** → **Remote NDIS Compatible Device** → **Next**. (https://learn.microsoft.com/en-us/answers/questions/3225865/missing-remote-ndis-driver-after-win10-update-to-1?utm_source=chatgpt.com "Missing Remote NDIS DRIVER after win10 update to 1903"), [learn.adafruit.com](https://learn.adafruit.com/turning-your-raspberry-pi-zero-into-a-usb-gadget/ethernet-gadget?utm_source=chatgpt.com "Turning your Raspberry Pi Zero into a USB Gadget")
     
 4. If it still isn’t listed: **Have Disk…** → path **`C:\Windows\INF`** → pick **netrndis.inf** (or select Microsoft → RNDIS model) → **Next**. (https://learn.microsoft.com/en-us/answers/questions/2790061/remote-ndis-based-internet-sharing-device-no-valid?utm_source=chatgpt.com "Remote NDIS based internet sharing Device \"No valid IP ...")
     
