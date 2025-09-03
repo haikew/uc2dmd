@@ -28,17 +28,18 @@ fb[:,:, 0] = 0
 fb[:,:, 1] = 0 
 fb[:,:, 2] = 0 
 #only red channel matters, which is fb[:,:, 2]
-# convert to numpy array
-log_frame = Image.open('openMLA_logo_1280x720.png')
+# convert to numpy array - using grayscale conversion
+log_frame = Image.open('openMLA_logo_1280x720.png').convert('L')
 log_pixeldata = np.array(log_frame)
-grating_array0 = Image.open('SLM_0.25_1.50_33_wl488_ang0_pha0.png')
+
+grating_array0 = Image.open('dmd_fastapi_image/SIM_grating_phase_1_period_6.png').convert('L')
 grating_array0 = np.array(grating_array0)
-grating_array1 = Image.open('SLM_0.25_1.50_33_wl488_ang1_pha0.png')
+
+grating_array1 = Image.open('dmd_fastapi_image/SIM_grating_phase_2_period_6.png').convert('L')
 grating_array1 = np.array(grating_array1)
-grating_array2 = Image.open('SLM_0.25_1.50_33_wl488_ang2_pha0.png')
+
+grating_array2 = Image.open('dmd_fastapi_image/SIM_grating_phase_3_period_6.png').convert('L')
 grating_array2 = np.array(grating_array2)
-
-
 
 # while loop
 for i in range(10):
