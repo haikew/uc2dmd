@@ -1,13 +1,12 @@
 """
-Optical Sectioning Structured Illumination Microscopy Reconstruction Tool
+Optical Sectioning Tool using IOS (In-focus/Out-of-focus Sectioning) Algorithm
 For processing three phase-shifted projection images for optical sectioning reconstruction
 
-Based on the optical sectioning principle of structured illumination microscopy, 
-this tool extracts optical section information from three phase-structured illumination images
-and removes out-of-focus light and scattered light.
+This tool uses a simplified IOS algorithm with basic image preprocessing to extract
+optical section information and reduce out-of-focus light interference.
 
 Author: 
-Date: 2025-08-28
+Date: 2025-09-05
 """
 
 import numpy as np
@@ -19,8 +18,8 @@ import glob
 import os
 
 
-class OpticalSectioningSIM:
-    """Optical Sectioning Structured Illumination Microscopy Reconstruction Class"""
+class OpticalSectioningIOS:
+    """Optical Sectioning using IOS (In-focus/Out-of-focus Sectioning) Algorithm"""
     
     def __init__(self):
         """Initialize the reconstructor"""
@@ -58,77 +57,64 @@ class OpticalSectioningSIM:
         return True
         
     def optical_sectioning_reconstruction(self):
-        """Execute optical sectioning reconstruction with salt-and-pepper noise reduction"""
+        """Execute IOS (In-focus/Out-of-focus Sectioning) algorithm with basic image preprocessing"""
         if len(self.images) != 3:
             raise ValueError("Three phase-shifted images are required")
             
         I0, I1, I2 = self.images
         
-        # Step 1: Pre-process images to reduce salt-and-pepper noise
-        def median_filter(img, kernel_size=3):
-            """Median filter to remove salt-and-pepper noise"""
-            pad = kernel_size // 2
+        # Basic image preprocessing to reduce artifacts
+        def gaussian_filter(img, sigma=1.0):
+            """Simple Gaussian filter approximation using weighted averaging"""
+            # Create a simple 3x3 Gaussian kernel
+            kernel = np.array([[1, 2, 1],
+                              [2, 4, 2], 
+                              [1, 2, 1]], dtype=np.float32) / 16.0
+            
+            pad = 1
             padded = np.pad(img, pad, mode='reflect')
             filtered = np.zeros_like(img)
             
             for i in range(img.shape[0]):
                 for j in range(img.shape[1]):
-                    window = padded[i:i+kernel_size, j:j+kernel_size]
-                    filtered[i, j] = np.median(window)
+                    window = padded[i:i+3, j:j+3]
+                    filtered[i, j] = np.sum(window * kernel)
             return filtered
         
-        # Apply median filter to each image to remove salt-and-pepper noise
-        I0_filtered = median_filter(I0, kernel_size=3)
-        I1_filtered = median_filter(I1, kernel_size=3)  
-        I2_filtered = median_filter(I2, kernel_size=3)
+        # Apply Gaussian filter to reduce noise while preserving features
+        I0_smooth = gaussian_filter(I0)
+        I1_smooth = gaussian_filter(I1)  
+        I2_smooth = gaussian_filter(I2)
         
-        # Calculate widefield image (average image)
-        widefield = (I0_filtered + I1_filtered + I2_filtered) / 3.0
+        # Calculate widefield image (uniform illumination estimate)
+        widefield = (I0_smooth + I1_smooth + I2_smooth) / 3.0
         
-        # Calculate modulation components (based on 120-degree phase shift)
-        diff0 = I0_filtered - widefield
-        diff1 = I1_filtered - widefield  
-        diff2 = I2_filtered - widefield
+        # IOS Algorithm: Calculate max and min for each pixel
+        # This separates in-focus (high modulation) from out-of-focus (low modulation) regions
+        I_max = np.maximum(np.maximum(I0_smooth, I1_smooth), I2_smooth)
+        I_min = np.minimum(np.minimum(I0_smooth, I1_smooth), I2_smooth)
         
-        # Calculate first-order diffraction components for 3-phase SIM
-        cos_component = 2.0/3.0 * (2.0*diff0 - diff1 - diff2)
-        sin_component = 2.0/np.sqrt(3.0) * (diff1 - diff2)
+        # Calculate modulation contrast
+        # Avoid division by zero
+        safe_sum = I_max + I_min + 1e-8
+        contrast = (I_max - I_min) / safe_sum
         
-        # Modulation amplitude (visibility)
-        modulation_amplitude = np.sqrt(cos_component**2 + sin_component**2)
+        # Apply gentle smoothing to contrast to reduce noise
+        contrast_smooth = gaussian_filter(contrast)
         
-        # Apply additional median filter to modulation amplitude to remove residual noise
-        modulation_amplitude_clean = median_filter(modulation_amplitude, kernel_size=3)
+        # IOS reconstruction: enhance in-focus regions
+        # Use contrast as a weight to enhance structured regions
+        optical_section = widefield + contrast_smooth * (I_max - widefield) * 0.5
         
-        # Normalized modulation depth (visibility)
-        safe_widefield = np.maximum(widefield, 1e-6)
-        modulation_depth = modulation_amplitude_clean / safe_widefield
+        # Final cleanup with gentle smoothing
+        optical_section_final = gaussian_filter(optical_section)
         
-        # Apply median filter to modulation depth as well
-        modulation_depth_clean = median_filter(modulation_depth, kernel_size=3)
-        
-        # Simple optical sectioning reconstruction - reduce artifacts
-        modulation_threshold = 0.02  # Very low threshold
-        
-        # Conservative enhancement
-        enhanced_signal = modulation_amplitude_clean * 0.3  # Further reduce to minimize noise amplification
-        
-        # Conservative reconstruction
-        optical_section = widefield + enhanced_signal
-        
-        # Apply one more median filter to the final result to ensure noise removal
-        optical_section_clean = median_filter(optical_section, kernel_size=3)
-        
-        # Gentle thresholding
-        mask = modulation_depth_clean > modulation_threshold
-        optical_section_final = optical_section_clean * mask + widefield * (1 - mask) * 0.9
-        
-        # Ensure values stay reasonable
+        # Ensure values stay in valid range
         optical_section_final = np.clip(optical_section_final, 0, 1)
         
-        return widefield, optical_section_final, modulation_depth_clean
+        return widefield, optical_section_final
         
-    def save_results(self, output_dir, widefield, optical_section, modulation_depth):
+    def save_results(self, output_dir, widefield, optical_section):
         """Save reconstruction results"""
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
@@ -136,7 +122,6 @@ class OpticalSectioningSIM:
         # Print statistics for debugging
         print(f"Widefield: min={widefield.min():.4f}, max={widefield.max():.4f}, mean={widefield.mean():.4f}")
         print(f"Optical section: min={optical_section.min():.4f}, max={optical_section.max():.4f}, mean={optical_section.mean():.4f}")
-        print(f"Modulation depth: min={modulation_depth.min():.4f}, max={modulation_depth.max():.4f}, mean={modulation_depth.mean():.4f}")
         
         # Simplified normalize function to reduce artifacts
         def normalize_for_save(img, name=""):
@@ -158,14 +143,11 @@ class OpticalSectioningSIM:
         optical_section_img = Image.fromarray(normalize_for_save(optical_section, "Optical section"), mode='L')
         optical_section_img.save(str(output_path / "optical_section.png"))
         
-        modulation_depth_img = Image.fromarray(normalize_for_save(modulation_depth, "Modulation depth"), mode='L')
-        modulation_depth_img.save(str(output_path / "modulation_depth.png"))
-        
         return str(output_path)
 
 
-def run_sim_gui():
-    """Run SIM reconstruction tool with GUI"""
+def run_ios_gui():
+    """Run IOS reconstruction tool with GUI"""
     
     def select_input_folder():
         """Select folder containing three images"""
@@ -194,7 +176,7 @@ def run_sim_gui():
         
         try:
             # Create reconstructor and load images
-            sim = OpticalSectioningSIM()
+            sim = OpticalSectioningIOS()
             sim.load_images(image_files)
             
             # Select output folder
@@ -206,13 +188,13 @@ def run_sim_gui():
             status_label.config(text="Processing...")
             root.update()
             
-            widefield, optical_section, modulation_depth = sim.optical_sectioning_reconstruction()
+            widefield, optical_section = sim.optical_sectioning_reconstruction()
             
             # Save results
-            saved_path = sim.save_results(output_folder, widefield, optical_section, modulation_depth)
+            saved_path = sim.save_results(output_folder, widefield, optical_section)
             
             status_label.config(text="Processing completed!")
-            messagebox.showinfo("Success", f"Reconstruction completed!\nResults saved to:\n{saved_path}\n\nOutput files:\n- widefield.png (widefield image)\n- optical_section.png (optical section)\n- modulation_depth.png (modulation depth)")
+            messagebox.showinfo("Success", f"Reconstruction completed!\nResults saved to:\n{saved_path}\n\nOutput files:\n- widefield.png (widefield image)\n- optical_section.png (optical section)")
             
         except Exception as e:
             status_label.config(text="Processing failed")
@@ -220,12 +202,12 @@ def run_sim_gui():
     
     # Create main window
     root = tk.Tk()
-    root.title("Optical Sectioning Structured Illumination Microscopy Reconstruction Tool")
+    root.title("Optical Sectioning IOS Reconstruction Tool")
     root.geometry("480x200")
     root.resizable(False, False)
     
     # Add description text
-    info_label = tk.Label(root, text="Optical Sectioning SIM Reconstruction Tool\n\nPlease select a folder containing exactly 3 phase-shifted images", 
+    info_label = tk.Label(root, text="Optical Sectioning IOS Reconstruction Tool\n\nPlease select a folder containing exactly 3 phase-shifted images", 
                          font=("Arial", 12), pady=20)
     info_label.pack()
     
@@ -248,5 +230,5 @@ def run_sim_gui():
 
 
 if __name__ == "__main__":
-    print("Starting Optical Sectioning Structured Illumination Microscopy Reconstruction Tool...")
-    run_sim_gui()
+    print("Starting Optical Sectioning IOS Reconstruction Tool...")
+    run_ios_gui()
