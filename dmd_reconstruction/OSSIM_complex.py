@@ -16,6 +16,7 @@ from tkinter import filedialog, messagebox
 from pathlib import Path
 import glob
 import os
+import threading
 
 
 class OpticalSectioningIOS:
@@ -57,61 +58,36 @@ class OpticalSectioningIOS:
         return True
         
     def optical_sectioning_reconstruction(self):
-        """Execute IOS (In-focus/Out-of-focus Sectioning) algorithm with basic image preprocessing"""
+        """Execute IOS (In-focus/Out-of-focus Sectioning) algorithm with minimal, recommended preprocessing"""
         if len(self.images) != 3:
             raise ValueError("Three phase-shifted images are required")
             
         I0, I1, I2 = self.images
-        
-        # Basic image preprocessing to reduce artifacts
-        def gaussian_filter(img, sigma=1.0):
-            """Simple Gaussian filter approximation using weighted averaging"""
-            # Create a simple 3x3 Gaussian kernel
-            kernel = np.array([[1, 2, 1],
-                              [2, 4, 2], 
-                              [1, 2, 1]], dtype=np.float32) / 16.0
-            
-            pad = 1
-            padded = np.pad(img, pad, mode='reflect')
-            filtered = np.zeros_like(img)
-            
-            for i in range(img.shape[0]):
-                for j in range(img.shape[1]):
-                    window = padded[i:i+3, j:j+3]
-                    filtered[i, j] = np.sum(window * kernel)
-            return filtered
-        
-        # Apply Gaussian filter to reduce noise while preserving features
-        I0_smooth = gaussian_filter(I0)
-        I1_smooth = gaussian_filter(I1)  
-        I2_smooth = gaussian_filter(I2)
-        
-        # Calculate widefield image (uniform illumination estimate)
-        widefield = (I0_smooth + I1_smooth + I2_smooth) / 3.0
-        
-        # IOS Algorithm: Calculate max and min for each pixel
-        # This separates in-focus (high modulation) from out-of-focus (low modulation) regions
-        I_max = np.maximum(np.maximum(I0_smooth, I1_smooth), I2_smooth)
-        I_min = np.minimum(np.minimum(I0_smooth, I1_smooth), I2_smooth)
-        
-        # Calculate modulation contrast
-        # Avoid division by zero
-        safe_sum = I_max + I_min + 1e-8
-        contrast = (I_max - I_min) / safe_sum
-        
-        # Apply gentle smoothing to contrast to reduce noise
-        contrast_smooth = gaussian_filter(contrast)
-        
-        # IOS reconstruction: enhance in-focus regions
-        # Use contrast as a weight to enhance structured regions
-        optical_section = widefield + contrast_smooth * (I_max - widefield) * 0.5
-        
-        # Final cleanup with gentle smoothing
-        optical_section_final = gaussian_filter(optical_section)
-        
-        # Ensure values stay in valid range
+
+        # Minimal preprocessing (recommended): a single light 3x3 Gaussian available if needed
+        def gaussian_filter(img):
+            """Fast vectorized 3x3 Gaussian blur with reflect padding"""
+            p = np.pad(img, ((1, 1), (1, 1)), mode='reflect')
+            return (
+                p[:-2, :-2] + 2 * p[:-2, 1:-1] + p[:-2, 2:] +
+                2 * p[1:-1, :-2] + 4 * p[1:-1, 1:-1] + 2 * p[1:-1, 2:] +
+                p[2:, :-2] + 2 * p[2:, 1:-1] + p[2:, 2:]
+            ) / 16.0
+
+        # DC term (widefield) directly from raw inputs to preserve contrast
+        widefield = (I0 + I1 + I2) / 3.0
+
+        # 3-phase demodulation (AC amplitude), preserves in-focus modulation
+        # I_k = DC + AC * cos(phi + k*2pi/3). Demod amplitude:
+        ac = np.sqrt((2.0 / 3.0) * (((I0 - I1) ** 2) + ((I1 - I2) ** 2) + ((I2 - I0) ** 2)))
+
+        # Normalize by DC to reduce shading; clip to [0,1] for saving
+        optical_section_norm = ac / (widefield + 1e-8)
+
+        # Optional gentle smoothing (single pass) to suppress pixel noise
+        optical_section_final = gaussian_filter(optical_section_norm)
+
         optical_section_final = np.clip(optical_section_final, 0, 1)
-        
         return widefield, optical_section_final
         
     def save_results(self, output_dir, widefield, optical_section):
@@ -175,31 +151,41 @@ def run_ios_gui():
         image_files.sort()
         
         try:
-            # Create reconstructor and load images
-            sim = OpticalSectioningIOS()
-            sim.load_images(image_files)
-            
-            # Select output folder
+            # Select output folder first (blocking dialog in UI thread)
             output_folder = filedialog.askdirectory(title="Select folder to save reconstruction results")
             if not output_folder:
                 return
-                
-            # Execute reconstruction
+            
+            # Disable UI and run all heavy work (load + reconstruct + save) in a background thread
             status_label.config(text="Processing...")
-            root.update()
-            
-            widefield, optical_section = sim.optical_sectioning_reconstruction()
-            
-            # Save results
-            saved_path = sim.save_results(output_folder, widefield, optical_section)
-            
-            status_label.config(text="Processing completed!")
-            messagebox.showinfo("Success", f"Reconstruction completed!\nResults saved to:\n{saved_path}\n\nOutput files:\n- widefield.png (widefield image)\n- optical_section.png (optical section)")
+            select_button.config(state=tk.DISABLED)
+
+            def worker():
+                try:
+                    sim = OpticalSectioningIOS()
+                    sim.load_images(image_files)
+                    widefield, optical_section = sim.optical_sectioning_reconstruction()
+                    saved_path = sim.save_results(output_folder, widefield, optical_section)
+
+                    def on_success():
+                        status_label.config(text="Processing completed!")
+                        select_button.config(state=tk.NORMAL)
+                        messagebox.showinfo("Success", f"Reconstruction completed!\nResults saved to:\n{saved_path}\n\nOutput files:\n- widefield.png (widefield image)\n- optical_section.png (optical section)")
+
+                    root.after(0, on_success)
+                except Exception as e:
+                    def on_error():
+                        status_label.config(text="Processing failed")
+                        select_button.config(state=tk.NORMAL)
+                        messagebox.showerror("Error", f"Processing failed:\n{str(e)}")
+                    root.after(0, on_error)
+
+            threading.Thread(target=worker, daemon=True).start()
             
         except Exception as e:
             status_label.config(text="Processing failed")
             messagebox.showerror("Error", f"Processing failed:\n{str(e)}")
-    
+
     # Create main window
     root = tk.Tk()
     root.title("Optical Sectioning IOS Reconstruction Tool")
