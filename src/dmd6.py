@@ -32,24 +32,39 @@ fb[:,:, 2] = 0
 log_frame = Image.open('openMLA_logo_1280x720.png').convert('L')
 log_pixeldata = np.array(log_frame)
 
-grating_array0 = Image.open('dmd_fastapi_image/grating_cos_phase0.png').convert('L')
+grating_array0 = Image.open('dmd_fastapi_image/binary_p6_s1_idx00.png').convert('L')
 grating_array0 = np.array(grating_array0)
 
-grating_array1 = Image.open('dmd_fastapi_image/grating_cos_phase1.png').convert('L')
+grating_array1 = Image.open('dmd_fastapi_image/binary_p6_s1_idx01.png').convert('L')
 grating_array1 = np.array(grating_array1)
 
-grating_array2 = Image.open('dmd_fastapi_image/grating_cos_phase2.png').convert('L')
+grating_array2 = Image.open('dmd_fastapi_image/binary_p6_s1_idx02.png').convert('L')
 grating_array2 = np.array(grating_array2)
 
+grating_array3 = Image.open('dmd_fastapi_image/binary_p6_s1_idx03.png').convert('L')
+grating_array3 = np.array(grating_array3)
+
+grating_array4 = Image.open('dmd_fastapi_image/binary_p6_s1_idx04.png').convert('L')
+grating_array4 = np.array(grating_array4)
+
+grating_array5 = Image.open('dmd_fastapi_image/binary_p6_s1_idx05.png').convert('L')
+grating_array5 = np.array(grating_array5)
+
 # while loop
-for i in range(10):
+for i in range(3):
     fb[:,:,2] = log_pixeldata
-    time.sleep(10)
+    time.sleep(5)
     fb[:,:,2] = grating_array0
     time.sleep(5)
     fb[:,:,2] = grating_array1
     time.sleep(5)
     fb[:,:,2] = grating_array2
+    time.sleep(5)
+    fb[:,:,2] = grating_array3
+    time.sleep(5)
+    fb[:,:,2] = grating_array4
+    time.sleep(5)
+    fb[:,:,2] = grating_array5
     time.sleep(5)
 
 DMD.stop_exposure()  

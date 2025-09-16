@@ -2,23 +2,12 @@
 Six-Phase OSSIM (Optical Sectioning Structured Illumination Microscopy)
 
 基于等间隔六相(0°, 60°, 120°, 180°, 240°, 300°)条纹的光学切片重建。
-
-核心思想：对六相序列做一阶谐波解调（类似相位移解调/DFT），
-得到AC幅值|C1|作为调制振幅；将其除以DC（平均值）进行归一化，
-得到抑制阴影的光学切片图。
-
-公式（N=6）：
-  DC = (1/N) * Σ_k I_k
-  S_c = Σ_k I_k * cos(2πk/N)
-  S_s = Σ_k I_k * sin(2πk/N)
-  A = (2/N) * sqrt(S_c^2 + S_s^2)          # 一阶谐波幅值
-  OS = A / (DC + eps)                       # 归一化光学切片
-  φ = atan2(-S_s, S_c)                      # 可选：相位图（与初相位相关）
+基于IOS = [(I1 - I2)² + (I1 - I3)² + (I2 - I3)²]^(1/2)公式的6相位版本
 
 依赖：numpy, Pillow（tkinter 为可选GUI）
 
 Author:
-Date: 2025-09-15
+Date: 2024-06-01
 """
 
 from __future__ import annotations
@@ -40,6 +29,8 @@ except Exception:
 class SixPhaseOSSIM:
     def __init__(self):
         self.images: list[np.ndarray] = []
+        # 新增：记录亮度增益，便于调试或复用
+        self.brightness_gains: list[float] | None = None
 
     def load_images(self, image_paths: list[str | os.PathLike]):
         if len(image_paths) != 6:
@@ -58,6 +49,40 @@ class SixPhaseOSSIM:
         self.images = imgs
         return True
 
+    def level_brightness(self, method: str = "median") -> None:
+        """
+        将六张图的整体亮度归一化到同一水平（默认基于中位数）。
+        过程：
+        - 计算每张图的统计量（均值或中位数）
+        - 以所有统计量的中位数为参考，计算每张图的增益
+        - 应用增益后，如整体最大值>1，则对全部图像再乘以公共缩放系数避免饱和
+        """
+        if not self.images or len(self.images) != 6:
+            raise ValueError("Images must be loaded before brightness leveling")
+        stats = []
+        for img in self.images:
+            if method == "mean":
+                stats.append(float(np.mean(img)))
+            else:
+                stats.append(float(np.median(img)))
+        # 参考值使用统计量的中位数，鲁棒性更好
+        ref = float(np.median(np.array(stats, dtype=np.float32)))
+        gains: list[float] = []
+        leveled: list[np.ndarray] = []
+        eps = 1e-8
+        for img, s in zip(self.images, stats):
+            g = ref / (s + eps) if s > eps else 1.0
+            gains.append(float(g))
+            leveled.append((img * g).astype(np.float32))
+        # 避免溢出：统一按全局最大值做一次公共缩放（不破坏相对归一化）
+        global_max = max(float(x.max()) for x in leveled)
+        if global_max > 1.0 + 1e-6:
+            scale = 1.0 / global_max
+            leveled = [(x * scale).astype(np.float32) for x in leveled]
+            gains = [g * scale for g in gains]
+        self.images = leveled
+        self.brightness_gains = gains
+
     def reconstruct(self, return_phase: bool = False, mode: str = "demod"):
         if len(self.images) != 6:
             raise ValueError("Six phase-shifted images are required")
@@ -69,10 +94,7 @@ class SixPhaseOSSIM:
         mode_lc = (mode or "demod").lower()
 
         if mode_lc == "ios":
-            # Multi-image IOS analogous to 3-image IOS: sqrt(sum_{i<j} (Ii - Ij)^2) with a normalization factor.
-            # For 3-phase we had: IOS = sqrt(((I1-I2)^2 + (I1-I3)^2 + (I2-I3)^2)/2)
-            # For 6-phase, there are C(6,2)=15 pairs. We choose the same scaling so that
-            # amplitude is comparable to 3-phase up to a constant factor. Here we divide by 2 as in simple IOS.
+            # Multi-image IOS analogous to 3-image IOS
             ios_sum = (
                 (I[0]-I[1])**2 + (I[0]-I[2])**2 + (I[0]-I[3])**2 + (I[0]-I[4])**2 + (I[0]-I[5])**2 +
                 (I[1]-I[2])**2 + (I[1]-I[3])**2 + (I[1]-I[4])**2 + (I[1]-I[5])**2 +
@@ -81,13 +103,10 @@ class SixPhaseOSSIM:
                 (I[4]-I[5])**2
             )
             optical_section = np.sqrt(ios_sum / 2.0)
-            if return_phase:
-                # IOS模式不返回相位
-                return widefield, optical_section, None
-            return widefield, optical_section
+            phase = None
+            return widefield, optical_section, phase
         else:
             # First-harmonic demodulation via cosine/sine weights (default)
-            # φ_k = 2πk/N, k=0..5
             k = np.arange(N, dtype=np.float32)
             phi = 2.0 * np.pi * k / float(N)
             cosw = np.cos(phi).astype(np.float32)
@@ -104,10 +123,8 @@ class SixPhaseOSSIM:
             optical_section = amplitude / (widefield + eps)
             optical_section = np.clip(optical_section, 0.0, 1.0)
 
-            if return_phase:
-                phase = np.arctan2(-Ss, Sc)
-                return widefield, optical_section, phase
-            return widefield, optical_section
+            phase = np.arctan2(-Ss, Sc) if return_phase else None
+            return widefield, optical_section, phase
 
     @staticmethod
     def _normalize_u8(img: np.ndarray) -> np.ndarray:
@@ -160,11 +177,16 @@ def run_gui():
             root.update()
             recon = SixPhaseOSSIM()
             recon.load_images(files)
+            if brightness_norm_var.get():
+                recon.level_brightness(method='median')
             mode = 'ios' if ios_mode_var.get() else 'demod'
             wf, os_img, phase = recon.reconstruct(return_phase=(mode=='demod'), mode=mode)
             saved = recon.save_results(outdir, wf, os_img, phase)
             status_var.set("完成！")
-            messagebox.showinfo("成功", f"六相OSSIM重建完成，结果保存在:\n{saved}\n\n输出文件:\n- widefield.png\n- optical_section.png\n- phase_map.png")
+            outputs = "- widefield.png\n- optical_section.png"
+            if phase is not None:
+                outputs += "\n- phase_map.png"
+            messagebox.showinfo("成功", f"六相OSSIM重建完成，结果保存在:\n{saved}\n\n输出文件:\n{outputs}")
         except Exception as e:
             status_var.set("失败")
             messagebox.showerror("错误", f"处理失败：\n{e}")
@@ -178,6 +200,9 @@ def run_gui():
     # Mode selection
     ios_mode_var = tk.BooleanVar(value=True)
     tk.Checkbutton(root, text="使用IOS模式（与OSSIM_simple一致，不归一化）", variable=ios_mode_var).pack()
+    # 亮度归一化（输入级）
+    brightness_norm_var = tk.BooleanVar(value=True)
+    tk.Checkbutton(root, text="归一化每张输入图的整体亮度到同一水平", variable=brightness_norm_var).pack()
 
     tk.Button(root, text="选择图像文件夹并处理", font=("Arial", 11), command=select_and_process, width=22, height=2, bg="#4CAF50", fg="white").pack(pady=10)
     status_var = tk.StringVar(value="等待选择...")
@@ -185,7 +210,9 @@ def run_gui():
     tk.Label(root, text="支持格式: PNG, JPG, TIF, BMP", font=("Arial", 9), fg="blue").pack(pady=10)
     root.mainloop()
 
-
 if __name__ == "__main__":
     print("Starting Six-Phase OSSIM GUI...")
-    run_gui()
+    if _TK_AVAILABLE:
+        run_gui()
+    else:
+        print("tkinter is not available in this environment")
