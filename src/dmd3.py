@@ -32,13 +32,13 @@ fb[:,:, 2] = 0
 log_frame = Image.open('openMLA_logo_1280x720.png').convert('L')
 log_pixeldata = np.array(log_frame)
 
-grating_array0 = Image.open('dmd_fastapi_image/grating_cos_phase0.png').convert('L')
+grating_array0 = Image.open('dmd_fastapi_image/binary_p6_s2_idx00.png').convert('L')
 grating_array0 = np.array(grating_array0)
 
-grating_array1 = Image.open('dmd_fastapi_image/grating_cos_phase1.png').convert('L')
+grating_array1 = Image.open('dmd_fastapi_image/binary_p6_s2_idx01.png').convert('L')
 grating_array1 = np.array(grating_array1)
 
-grating_array2 = Image.open('dmd_fastapi_image/grating_cos_phase2.png').convert('L')
+grating_array2 = Image.open('dmd_fastapi_image/binary_p6_s2_idx02.png').convert('L')
 grating_array2 = np.array(grating_array2)
 
 # while loop

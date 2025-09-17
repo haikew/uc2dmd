@@ -29,26 +29,55 @@ class IOSReconstructor:
         self.images = []
         for path in image_paths:
             with Image.open(path) as img:
-                if img.mode != 'L':
-                    img = img.convert('L')
-                img_array = np.array(img, dtype=np.float32) / 255.0
+                arr = np.array(img)  # 保留原始位深/通道
+            # 转灰度但不降位深
+            if arr.ndim == 3:
+                arr = arr[..., :3].astype(np.float32)
+                arr = 0.2989*arr[...,0] + 0.5870*arr[...,1] + 0.1140*arr[...,2]
+            # 归一化到 [0,1]（保持 16-bit 动态范围）
+            if np.issubdtype(arr.dtype, np.integer):
+                maxv = np.iinfo(arr.dtype).max
+            else:
+                mv = float(np.nanmax(arr)) if arr.size else 1.0
+                maxv = mv if mv > 0 else 1.0
+            img_array = arr.astype(np.float32) / maxv
             self.images.append(img_array)
-        # Check if image dimensions are consistent
         reference_shape = self.images[0].shape
         for img in self.images[1:]:
             if img.shape != reference_shape:
                 raise ValueError("Image dimension mismatch")
         return True
-        
+
     def ios_reconstruction(self):
         """Execute reconstruction using the basic IOS formula"""
         if len(self.images) != 3:
             raise ValueError("Three phase-shifted images are required")
-        I1, I2, I3 = self.images
+        I1, I2, I3 = [im.copy() for im in self.images]
+
+        # 去背景（每帧中位数）
+        for I in (I1, I2, I3):
+            I -= np.median(I)
+
+        # 去列偏置（每列中位数）——显著抑制竖条纹
+        for I in (I1, I2, I3):
+            I -= np.median(I, axis=0, keepdims=True)
+
+        # 统一增益（减少功率/曝光漂移）
+        means = [np.mean(I) if np.std(I) > 0 else 1.0 for I in (I1, I2, I3)]
+        g = np.mean(means)
+        I1 *= g / (means[0] if means[0] != 0 else 1.0)
+        I2 *= g / (means[1] if means[1] != 0 else 1.0)
+        I3 *= g / (means[2] if means[2] != 0 else 1.0)
+
         widefield = (I1 + I2 + I3) / 3.0
-        # 纯IOS公式
-        ios = np.sqrt(((I1 - I2)**2 + (I1 - I3)**2 + (I2 - I3)**2)/2.0)
+
+        # 稳健三相解调（假设相位 0, 2π/3, 4π/3）
+        theta = np.array([0.0, 2*np.pi/3, 4*np.pi/3], dtype=np.float32)
+        C = (I1*np.exp(-1j*theta[0]) + I2*np.exp(-1j*theta[1]) + I3*np.exp(-1j*theta[2]))
+        ios = np.sqrt(2.0/3.0) * np.abs(C)
+
         return widefield, ios
+# ...existing code...
         
     def save_results(self, output_dir, widefield, ios):
         """Save reconstruction results"""
