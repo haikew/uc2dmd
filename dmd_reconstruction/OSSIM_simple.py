@@ -1,7 +1,7 @@
 """
 IOS Reconstruction Tool for SIM Images
 Simple IOS-based reconstruction from three phase-shifted images
-IOS = [(I1 - I2)² + (I1 - I3)² + (I2 - I3)²]^(1/2)
+Classic IOS = [(I1 - I2)^2 + (I1 - I3)^2 + (I2 - I3)^2]^(1/2)
 
 Author: 
 Date: 2025-08-29
@@ -49,20 +49,20 @@ class IOSReconstructor:
         return True
 
     def ios_reconstruction(self):
-        """Execute reconstruction using the basic IOS formula"""
+        """Execute reconstruction using the classic IOS RMS formula"""
         if len(self.images) != 3:
             raise ValueError("Three phase-shifted images are required")
         I1, I2, I3 = [im.copy() for im in self.images]
 
-        # 去背景（每帧中位数）
+        # Background removal (frame median)
         for I in (I1, I2, I3):
             I -= np.median(I)
 
-        # 去列偏置（每列中位数）——显著抑制竖条纹
+        # Column bias removal (column median)
         for I in (I1, I2, I3):
             I -= np.median(I, axis=0, keepdims=True)
 
-        # 统一增益（减少功率/曝光漂移）
+        # Gain normalization
         means = [np.mean(I) if np.std(I) > 0 else 1.0 for I in (I1, I2, I3)]
         g = np.mean(means)
         I1 *= g / (means[0] if means[0] != 0 else 1.0)
@@ -71,13 +71,10 @@ class IOSReconstructor:
 
         widefield = (I1 + I2 + I3) / 3.0
 
-        # 稳健三相解调（假设相位 0, 2π/3, 4π/3）
-        theta = np.array([0.0, 2*np.pi/3, 4*np.pi/3], dtype=np.float32)
-        C = (I1*np.exp(-1j*theta[0]) + I2*np.exp(-1j*theta[1]) + I3*np.exp(-1j*theta[2]))
-        ios = np.sqrt(2.0/3.0) * np.abs(C)
+        # Classic IOS formula (RMS of pairwise differences)
+        ios = np.sqrt((I1 - I2)**2 + (I1 - I3)**2 + (I2 - I3)**2)
 
         return widefield, ios
-# ...existing code...
         
     def save_results(self, output_dir, widefield, ios):
         """Save reconstruction results"""
@@ -145,6 +142,9 @@ def run_ios_gui():
     root.mainloop()
 
 
+if __name__ == "__main__":
+    print("Starting IOS SIM Reconstruction Tool...")
+    run_ios_gui()
 if __name__ == "__main__":
     print("Starting IOS SIM Reconstruction Tool...")
     run_ios_gui()
