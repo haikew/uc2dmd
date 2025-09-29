@@ -4,10 +4,9 @@ DMD FastAPI Controller - Simplified Version
 Author: Based on TI DLPC1438 DMD Controller specifications
 Date: 2025
 
-Simplified DMD controller for cycling through three pattern images.
+Simplified DMD controller for displaying requested pattern images.
 Main features:
 - Display patterns from dmd_fastapi_image directory
-- Configurable cycle count and display time
 - Health monitoring and error recovery
 - Compatible with TI DLPC1438 DMD controller
 """
@@ -80,8 +79,6 @@ PATTERN_FILES = [
 ]
 
 # Timing Configuration
-DEFAULT_DISPLAY_TIME = 5.0  # Default display time per pattern (seconds)
-MIN_DISPLAY_TIME = 0.1      # Minimum display time
 DMD_INIT_TIMEOUT = 3.0      # DMD initialization timeout
 
 # Simple in-memory framebuffer simulator when /dev/fb0 is not available
@@ -99,16 +96,11 @@ class _ArrayFB:
 # DMD Controller Class
 # ────────────────────────────
 class SimpleDMDController:
-    """Simplified DMD Controller for pattern cycling."""
-    
+    """Simplified DMD Controller for manual pattern display."""
+
     def __init__(self):
         self._lock = threading.Lock()
-        self._running = False
-        self._thread = None
         self._current_pattern = 0
-        self._current_cycle = 0
-        self._max_cycles = -1
-        self._display_time = DEFAULT_DISPLAY_TIME
 
         # Dynamic pattern configuration (aligned with dmd3.py style)
         self.pattern_dir = PATTERN_DIR
@@ -211,80 +203,15 @@ class SimpleDMDController:
             self._current_pattern = 0
             print(f"✓ Reloaded patterns from {self.pattern_dir} ({len(self.patterns)} loaded)")
     
-    def start_cycling(self, cycles: int = -1, display_time: float = DEFAULT_DISPLAY_TIME):
-        """Start pattern cycling."""
-        with self._lock:
-            if self._running:
-                return False
-            
-            self._max_cycles = cycles
-            self._display_time = max(MIN_DISPLAY_TIME, display_time)
-            self._current_cycle = 0
-            self._running = True
-            
-            self._thread = threading.Thread(target=self._cycle_loop, daemon=True)
-            self._thread.start()
-            
-            print(f"Started cycling: {cycles} cycles, {display_time}s per pattern")
-            return True
-    
-    def stop_cycling(self):
-        """Stop pattern cycling."""
-        with self._lock:
-            if not self._running:
-                return False
-            
-            self._running = False
-            
-        if self._thread:
-            self._thread.join(timeout=2.0)
-            self._thread = None
-        
-        print("Stopped cycling")
-        return True
-    
-    def _cycle_loop(self):
-        """Main cycling loop - similar to dmd_test1.py loop."""
-        try:
-            while self._running:
-                # Check cycle limit
-                if self._max_cycles > 0 and self._current_cycle >= self._max_cycles:
-                    break
-                
-                # Display each pattern in sequence
-                for i in range(len(self.patterns)):
-                    if not self._running:
-                        return
-                    
-                    try:
-                        self.display_pattern(i)
-                        time.sleep(self._display_time)
-                    except Exception as e:
-                        print(f"Error in cycle loop: {e}")
-                
-                self._current_cycle += 1
-                print(f"Completed cycle {self._current_cycle}")
-        
-        except Exception as e:
-            print(f"Cycle loop error: {e}")
-        finally:
-            self._running = False
-    
     def get_status(self):
         """Get current controller status."""
         return {
-            "running": self._running,
             "current_pattern": self._current_pattern,
-            "current_cycle": self._current_cycle,
-            "max_cycles": self._max_cycles,
-            "display_time": self._display_time,
             "total_patterns": len(self.patterns)
         }
-    
+
     def shutdown(self):
         """Shutdown controller and cleanup resources."""
-        self.stop_cycling()
-        
         try:
             if hasattr(self, 'dmd'):
                 self.dmd.stop_exposure()
@@ -310,9 +237,9 @@ except Exception as e:
     controller = None
 
 app = FastAPI(
-    title="DMD Pattern Controller", 
+    title="DMD Pattern Controller",
     version="2.0",
-    description="Simplified DMD controller for pattern cycling"
+    description="Simplified DMD controller for manual pattern display"
 )
 
 # Request model (add reload similar to dmd3 style)
@@ -332,8 +259,7 @@ def health():
     status = controller.get_status()
     return {
         "status": "healthy",
-        "patterns_loaded": status["total_patterns"],
-        "running": status["running"]
+        "patterns_loaded": status["total_patterns"]
     }
 
 @app.get("/display/{pattern_id}")
@@ -349,42 +275,6 @@ def display_single(pattern_id: int):
         return {"status": "error", "message": str(e)}
     except Exception as e:
         return {"status": "error", "message": f"Display failed: {e}"}
-
-@app.post("/start")
-def start_cycling(cycles: int = -1, display_time: float = DEFAULT_DISPLAY_TIME):
-    """Start pattern cycling.
-    
-    Args:
-        cycles: Number of cycles (-1 for infinite)
-        display_time: Time per pattern in seconds
-    """
-    if controller is None:
-        return {"status": "error", "message": "Controller not initialized"}
-    
-    try:
-        success = controller.start_cycling(cycles, display_time)
-        if success:
-            return {
-                "status": "started",
-                "cycles": cycles,
-                "display_time": display_time
-            }
-        else:
-            return {"status": "error", "message": "Already running"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
-
-@app.post("/stop")
-def stop_cycling():
-    """Stop pattern cycling."""
-    if controller is None:
-        return {"status": "error", "message": "Controller not initialized"}
-    
-    try:
-        success = controller.stop_cycling()
-        return {"status": "stopped" if success else "not_running"}
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
 
 @app.get("/status")
 def get_status():
